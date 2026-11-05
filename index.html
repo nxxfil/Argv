@@ -48,13 +48,13 @@
     <script>
         // --- YOUR SUPABASE CONFIGURATION ---
         const SUPABASE_URL = "https://mjgwdhehcoezqpphjssi.supabase.co";
-        const SUPABASE_ANON_KEY = "sb_publishable_...paste_your_key_here...";
+        const SUPABASE_ANON_KEY = "sb_publishable_fSXmk1cQ1wynHyM3_gQcLw_3QU3SiNY";
 
         const dbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-        // --- APPLICATION STATE (Restored from localStorage if available) ---
+        // --- APPLICATION STATE ---
         let currentUser = localStorage.getItem('chat_currentUser') || null;
-        let currentRoom = null; // We reset room on refresh so you choose /enter cleanly, or keep session state if desired
+        let currentRoom = null;
         let joinedRooms = [];
         let pendingAction = null;
         let activeSubscription = null;
@@ -67,7 +67,7 @@
 
         document.body.addEventListener('click', () => inputEl.focus());
 
-        // Initialize state on load
+        // Initialize session on load
         async function initSession() {
             if (currentUser) {
                 const { data: memberships } = await dbClient.from('room_members').select('roomname').eq('username', currentUser);
@@ -179,13 +179,12 @@
                     localStorage.removeItem('chat_currentUser');
                     if (activeSubscription) dbClient.removeChannel(activeSubscription);
                     updatePrompt();
-                    printLine("Logged out successfully.", "system-msg");
+                    printLine("Logged out successfully and session data cleared.", "system-msg");
                     break;
                 }
 
                 case '/cls':
                 case '/clear': {
-                    // Remove all child elements in terminal except the input line container
                     const lines = terminal.querySelectorAll('.line');
                     lines.forEach(l => l.remove());
                     break;
@@ -289,8 +288,8 @@
                     printLine("--- Available Commands ---", "system-msg");
                     printLine(" /signup [username] [password]  : Create an account");
                     printLine(" /login [username] [password]   : Log in to your account");
-                    printLine(" /logout                        : Log out of your account");
-                    printLine(" /cls or /clear                 : Clear the terminal screen");
+                    printLine(" /logout                        : Log out and clear saved info");
+                    printLine(" /cls or /clear                 : Clear terminal screen");
                     printLine(" /create [roomname] [roomcode]  : Create a room");
                     printLine(" /join [roomname] [roomcode]    : Join a room (requires confirmation)");
                     printLine(" /enter [roomname]             : Enter a joined room");
