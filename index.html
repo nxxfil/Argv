@@ -327,7 +327,6 @@ printLine(`You have permanently left '${action.room}'.`, "system-msg");
 }
 updatePrompt();
 }
-
 async function handleChatMessage(message) {
 if (!currentUser) return printLine("Please use /login or /signup first", "error-msg");
 if (!currentRoom) return printLine("You are not in a room yet, enter one with /enter", "error-msg");
