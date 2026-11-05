@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Terminal Chat</title>
+    <title>Terminal Chat with DMs</title>
     <!-- Include Supabase JS SDK -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <style>
@@ -35,7 +35,7 @@
 
     <div id="terminal">
         <div class="line system-msg">==================================================</div>
-        <div class="line system-msg"> Welcome to Terminal Chat v1.0 (Live Online)</div>
+        <div class="line system-msg"> Welcome to Terminal Chat v2.0 (Live DMs & Rooms)</div>
         <div class="line system-msg"> Type /help for a list of available commands.</div>
         <div class="line system-msg">==================================================</div>
         
@@ -52,9 +52,10 @@
 
         const dbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-        // --- APPLICATION STATE (Restored from localStorage if available) ---
+        // --- APPLICATION STATE ---
         let currentUser = localStorage.getItem('chat_currentUser') || null;
-        let currentRoom = null; // We reset room on refresh so you choose /enter cleanly, or keep session state if desired
+        let currentRoom = null;   // Room name if inside a room
+        let currentDM = null;     // Username if inside a DM
         let joinedRooms = [];
         let pendingAction = null;
         let activeSubscription = null;
@@ -67,16 +68,32 @@
 
         document.body.addEventListener('click', () => inputEl.focus());
 
-        // Initialize state on load
+        // Initialize session on load & check unread DMs
         async function initSession() {
             if (currentUser) {
                 const { data: memberships } = await dbClient.from('room_members').select('roomname').eq('username', currentUser);
                 joinedRooms = memberships ? memberships.map(m => m.roomname) : [];
                 printLine(`Auto-logged in as session user: ${currentUser}`, "success-msg");
+                
+                // Check unread DMs on login
+                await checkUnreadDMsOnLogin();
             }
             updatePrompt();
         }
         initSession();
+
+        async function checkUnreadDMsOnLogin() {
+            const { data: unread } = await dbClient
+                .from('direct_messages')
+                .select('sender')
+                .eq('recipient', currentUser)
+                .eq('is_read', false);
+
+            if (unread && unread.length > 0) {
+                const senders = [...new Set(unread.map(m => m.sender))];
+                printLine(`Notification: You have unread DMs from: ${senders.join(', ')}. Type /dm to view.`, "success-msg");
+            }
+        }
 
         function updatePrompt() {
             if (pendingAction) {
@@ -85,6 +102,8 @@
                 promptEl.textContent = "<newuser>  ";
             } else if (currentRoom) {
                 promptEl.textContent = `<${currentUser}\\${currentRoom}>  `;
+            } else if (currentDM) {
+                promptEl.textContent = `<${currentUser}\\dms\\${currentDM}>  `;
             } else {
                 promptEl.textContent = `<${currentUser}>  `;
             }
@@ -167,27 +186,114 @@
                     const { data: memberships } = await dbClient.from('room_members').select('roomname').eq('username', currentUser);
                     joinedRooms = memberships ? memberships.map(m => m.roomname) : [];
                     currentRoom = null;
+                    currentDM = null;
                     updatePrompt();
                     printLine(`Logged in successfully as ${currentUser}`, "success-msg");
+                    await checkUnreadDMsOnLogin();
                     break;
                 }
 
                 case '/logout': {
                     currentUser = null;
                     currentRoom = null;
+                    currentDM = null;
                     joinedRooms = [];
                     localStorage.removeItem('chat_currentUser');
                     if (activeSubscription) dbClient.removeChannel(activeSubscription);
                     updatePrompt();
-                    printLine("Logged out successfully.", "system-msg");
+                    printLine("Logged out successfully and session data cleared.", "system-msg");
                     break;
                 }
 
                 case '/cls':
                 case '/clear': {
-                    // Remove all child elements in terminal except the input line container
                     const lines = terminal.querySelectorAll('.line');
                     lines.forEach(l => l.remove());
+                    break;
+                }
+
+                case '/dm': {
+                    if (args.length === 0) {
+                        // List all conversations with notification badges
+                        const { data: dms } = await dbClient
+                            .from('direct_messages')
+                            .select('*')
+                            .or(`sender.eq.${currentUser},recipient.eq.${currentUser}`);
+
+                        if (!dms || dms.length === 0) {
+                            return printLine("No direct messages found.", "system-msg");
+                        }
+
+                        // Aggregate peers and unread counts
+                        const peers = {};
+                        dms.forEach(msg => {
+                            const peer = msg.sender === currentUser ? msg.recipient : msg.sender;
+                            if (!peers[peer]) peers[peer] = 0;
+                            if (msg.recipient === currentUser && !msg.is_read) {
+                                peers[peer]++;
+                            }
+                        });
+
+                        printLine("--- Direct Message Conversations ---", "system-msg");
+                        for (const [peer, unreadCount] of Object.entries(peers)) {
+                            const badge = unreadCount > 0 ? ` [${unreadCount}]` : '';
+                            printLine(` - ${peer}${badge}`);
+                        }
+                    } else {
+                        // Enter specific DM chat: /dm [othersusername]
+                        const targetUser = args[0];
+                        if (targetUser === currentUser) return printLine("You cannot DM yourself.", "error-msg");
+
+                        const { data: targetExists } = await dbClient.from('users').select('username').eq('username', targetUser).single();
+                        if (!targetExists) return printLine("User does not exist.", "error-msg");
+
+                        currentRoom = null;
+                        currentDM = targetUser;
+                        updatePrompt();
+                        printLine(`Entered DM with '${currentDM}'. Loading history...`, "success-msg");
+
+                        // Mark messages from this user as read
+                        await dbClient
+                            .from('direct_messages')
+                            .update({ is_read: true })
+                            .eq('sender', currentDM)
+                            .eq('recipient', currentUser);
+
+                        // Load DM history
+                        const { data: history } = await dbClient
+                            .from('direct_messages')
+                            .select('*')
+                            .or(`and(sender.eq.${currentUser},recipient.eq.${currentDM}),and(sender.eq.${currentDM},recipient.eq.${currentUser})`)
+                            .order('created_at', { ascending: true });
+
+                        if (history) {
+                            history.forEach(msg => {
+                                if (msg.sender !== currentUser) {
+                                    printLine(`<${msg.sender}\\dms\\${currentUser}>  ${msg.content}`);
+                                }
+                            });
+                        }
+
+                        // Subscribe to real-time DMs
+                        if (activeSubscription) dbClient.removeChannel(activeSubscription);
+
+                        activeSubscription = dbClient
+                            .channel('public:direct_messages')
+                            .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'direct_messages' }, async payload => {
+                                const newMsg = payload.new;
+                                if (
+                                    (newMsg.sender === currentDM && newMsg.recipient === currentUser) ||
+                                    (newMsg.sender === currentUser && newMsg.recipient === currentDM)
+                                ) {
+                                    if (newMsg.sender !== currentUser) {
+                                        printLine(`<${newMsg.sender}\\dms\\${currentUser}>  ${newMsg.content}`);
+                                        // Mark read immediately since we are inside
+                                        await dbClient.from('direct_messages').update({ is_read: true }).eq('id', newMsg.id);
+                                    }
+                                }
+                            })
+                            .subscribe();
+                    }
                     break;
                 }
 
@@ -226,6 +332,7 @@
 
                     if (!joinedRooms.includes(targetRoom)) return printLine("You are not a member of this room, join by /join", "error-msg");
 
+                    currentDM = null; // exit DM if inside one
                     currentRoom = targetRoom;
                     updatePrompt();
                     printLine(`Entered room '${currentRoom}'. Loading chat history...`, "success-msg");
@@ -259,11 +366,19 @@
                 }
 
                 case '/exit': {
-                    if (!currentRoom) return printLine("You are not currently in any room.", "error-msg");
-                    printLine(`Exited room '${currentRoom}'.`, "system-msg");
-                    if (activeSubscription) dbClient.removeChannel(activeSubscription);
-                    currentRoom = null;
-                    updatePrompt();
+                    if (currentDM) {
+                        printLine(`Exited DM with '${currentDM}'.`, "system-msg");
+                        if (activeSubscription) dbClient.removeChannel(activeSubscription);
+                        currentDM = null;
+                        updatePrompt();
+                    } else if (currentRoom) {
+                        printLine(`Exited room '${currentRoom}'.`, "system-msg");
+                        if (activeSubscription) dbClient.removeChannel(activeSubscription);
+                        currentRoom = null;
+                        updatePrompt();
+                    } else {
+                        printLine("You are not currently in any room or DM.", "error-msg");
+                    }
                     break;
                 }
 
@@ -289,12 +404,14 @@
                     printLine("--- Available Commands ---", "system-msg");
                     printLine(" /signup [username] [password]  : Create an account");
                     printLine(" /login [username] [password]   : Log in to your account");
-                    printLine(" /logout                        : Log out of your account");
-                    printLine(" /cls or /clear                 : Clear the terminal screen");
+                    printLine(" /logout                        : Log out and clear saved info");
+                    printLine(" /cls or /clear                 : Clear terminal screen");
+                    printLine(" /dm                            : List DM conversations & unread badges");
+                    printLine(" /dm [username]                 : Open direct message chat with user");
                     printLine(" /create [roomname] [roomcode]  : Create a room");
                     printLine(" /join [roomname] [roomcode]    : Join a room (requires confirmation)");
                     printLine(" /enter [roomname]             : Enter a joined room");
-                    printLine(" /exit                         : Exit current room");
+                    printLine(" /exit                         : Exit current room or DM");
                     printLine(" /leave                        : Leave current room permanently (requires confirmation)");
                     printLine(" /view                         : Show joined rooms");
                     printLine(" /help                         : Show this menu");
@@ -326,9 +443,14 @@
 
         async function handleChatMessage(message) {
             if (!currentUser) return printLine("Please use /login or /signup first", "error-msg");
-            if (!currentRoom) return printLine("You are not in a room yet, enter one with /enter", "error-msg");
 
-            await dbClient.from('messages').insert([{ roomname: currentRoom, sender: currentUser, content: message }]);
+            if (currentRoom) {
+                await dbClient.from('messages').insert([{ roomname: currentRoom, sender: currentUser, content: message }]);
+            } else if (currentDM) {
+                await dbClient.from('direct_messages').insert([{ sender: currentUser, recipient: currentDM, content: message, is_read: false }]);
+            } else {
+                printLine("You are not in a room or DM yet. Enter one with /enter or /dm [username]", "error-msg");
+            }
         }
     </script>
 </body>
